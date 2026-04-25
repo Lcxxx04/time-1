@@ -47,7 +47,8 @@ class LoginWindow(QDialog):
         super().__init__(parent)
         self.setWindowTitle("登录")
         self.setModal(True)
-        self.resize(460, 320)
+        self.resize(680, 400)
+        self.setMinimumSize(660, 390)
         self.setObjectName("loginDialogRoot")
 
         self._users_path = RUNTIME_DIR / "users.json"
@@ -56,14 +57,20 @@ class LoginWindow(QDialog):
         self._remembered_login_path = remembered_login_path
         self.current_username: str | None = None
 
-        title = QLabel("家庭用电负载预测系统", self)
-        title.setAlignment(Qt.AlignCenter)
-        title.setObjectName("loginTitle")
+        self._title_label = QLabel("家庭用电负载预测系统", self)
+        self._title_label.setAlignment(Qt.AlignCenter)
+        self._title_label.setObjectName("loginTitle")
+        self._title_label.setWordWrap(True)
+        self._title_label.setMinimumHeight(48)
 
-        subtitle = QLabel("数据科技风本地登录入口，凭据仅保存在当前设备。", self)
-        subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setObjectName("pageIntro")
-        subtitle.setWordWrap(True)
+        self._subtitle_label = QLabel(
+            "数据科技风本地登录入口，凭据仅保存在当前设备。",
+            self,
+        )
+        self._subtitle_label.setAlignment(Qt.AlignCenter)
+        self._subtitle_label.setObjectName("pageIntro")
+        self._subtitle_label.setWordWrap(True)
+        self._subtitle_label.setMinimumHeight(40)
 
         self._username = QLineEdit(self)
         self._username.setObjectName("loginUsernameInput")
@@ -75,6 +82,8 @@ class LoginWindow(QDialog):
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignLeft)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(14)
         form.addRow("用户名", self._username)
         form.addRow("密码", self._password_field)
 
@@ -96,24 +105,30 @@ class LoginWindow(QDialog):
         self._register_btn.setEnabled(self._storage_ready)
 
         buttons = QHBoxLayout()
+        buttons.setSpacing(10)
         buttons.addStretch(1)
         buttons.addWidget(self._login_btn)
         buttons.addWidget(self._register_btn)
 
         card = QFrame(self)
         card.setObjectName("loginCard")
+        card.setMinimumWidth(520)
+        card.setMaximumWidth(580)
+        self._card = card
+
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(28, 28, 28, 24)
-        card_layout.setSpacing(12)
-        card_layout.addWidget(title)
-        card_layout.addWidget(subtitle)
+        card_layout.setContentsMargins(32, 26, 32, 24)
+        card_layout.setSpacing(16)
+        card_layout.addWidget(self._title_label)
+        card_layout.addWidget(self._subtitle_label)
+        card_layout.addSpacing(6)
         card_layout.addLayout(form)
         card_layout.addWidget(self._remember_password)
-        card_layout.addStretch(1)
+        card_layout.addSpacing(4)
         card_layout.addLayout(buttons)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 28, 28, 28)
+        root.setContentsMargins(18, 18, 18, 18)
         root.addStretch(1)
         root.addWidget(card, alignment=Qt.AlignCenter)
         root.addStretch(1)

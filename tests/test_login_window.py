@@ -1,4 +1,4 @@
-"""Tests for the login dialog remember-password flow."""
+"""Tests for the login dialog remember-password flow and layout."""
 
 from __future__ import annotations
 
@@ -7,11 +7,7 @@ from types import SimpleNamespace
 from PyQt5.QtWidgets import QDialog
 
 from services.auth_service import AuthError
-from services.login_preferences import (
-    clear_remembered_login,
-    load_remembered_login,
-    save_remembered_login,
-)
+from services.login_preferences import load_remembered_login, save_remembered_login
 from ui.login_window import LoginWindow
 
 
@@ -49,7 +45,10 @@ def test_successful_login_saves_remembered_credentials(
     window._password.setText("secret123")
     window._remember_password.setChecked(True)
 
-    monkeypatch.setattr("ui.login_window.authenticate_user", lambda store, username, password: SimpleNamespace(username=username))
+    monkeypatch.setattr(
+        "ui.login_window.authenticate_user",
+        lambda store, username, password: SimpleNamespace(username=username),
+    )
 
     window._try_login()
 
@@ -88,3 +87,14 @@ def test_failed_login_does_not_write_remembered_credentials(
     assert load_remembered_login(path) is None
     assert not path.exists()
     assert window.result() == 0
+
+
+def test_login_window_reserves_space_for_header_text(qapp, tmp_path) -> None:
+    window = LoginWindow(store=object(), remembered_login_path=tmp_path / "remembered_login.json")
+
+    assert window.width() >= 660
+    assert window.height() >= 360
+    assert window._card.maximumWidth() >= 560
+    assert window._title_label.minimumHeight() >= 44
+    assert window._subtitle_label.minimumHeight() >= 36
+    assert window._subtitle_label.wordWrap()

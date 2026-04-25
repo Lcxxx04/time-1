@@ -1,11 +1,11 @@
-"""预测工作台：模型选择、预测执行与结果导出。"""
+"""Forecast workspace: model selection, execution, export, and chart review."""
 
 from __future__ import annotations
 
 import json
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 import matplotlib
 
@@ -20,6 +20,7 @@ matplotlib.rcParams["axes.unicode_minus"] = False
 import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.backend_bases import MouseEvent
 from matplotlib.figure import Figure
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
@@ -43,10 +44,11 @@ MODEL_PATCHTST = "patchtst"
 MODEL_TIMEXER = "timexer"
 
 _HISTORY_DISPLAY_POINTS = 256
+_HOVER_DISTANCE_PX = 14.0
 
 
 class ForecastPage(QWidget):
-    """模型选择、预测天数、开始预测；摘要文本 + 历史/预测折线图。"""
+    """Model selection, forecast execution, chart review, and export."""
 
     prediction_records_changed = pyqtSignal()
 
@@ -61,6 +63,8 @@ class ForecastPage(QWidget):
         self._latest_record_id: Optional[int] = None
         self._latest_record_signature: Optional[tuple[str, str, str]] = None
         self._latest_record_context: Optional[dict[str, str]] = None
+        self._hover_targets: list[dict[str, Any]] = []
+        self._hover_annotation = None
 
         self._household_combo = QComboBox(self)
         self._household_combo.setObjectName("forecastCombo")
@@ -85,7 +89,7 @@ class ForecastPage(QWidget):
         self._export_btn.clicked.connect(self._on_export_clicked)
         self._export_btn.setEnabled(False)
 
-        self._result_label = QLabel("尚未运行预测。")
+        self._result_label = QLabel("尚未运行预测。", self)
         self._result_label.setWordWrap(True)
         self._result_label.setObjectName("forecastResultLabel")
 
@@ -93,9 +97,10 @@ class ForecastPage(QWidget):
         self._chart_canvas = FigureCanvasQTAgg(self._figure)
         self._chart_canvas.setObjectName("forecastChartCanvas")
         self._ax = self._figure.add_subplot(111)
-        self._ax.set_xlabel("采样点")
-        self._ax.set_ylabel("用电量（kWh）")
-        self._ax.grid(True, alpha=0.3)
+        self._chart_canvas.mpl_connect("motion_notify_event", self._on_chart_hover)
+        self._chart_canvas.mpl_connect("figure_leave_event", self._on_chart_leave)
+        self._apply_axes_style()
+        self._create_hover_annotation()
 
         self._setup_fixed_model_options()
 
@@ -132,7 +137,8 @@ class ForecastPage(QWidget):
         self._current_username = None
 
     def load_prepared_series(self, series: object) -> None:
-        """由数据工作台注入已预处理的历史序列。"""
+        """Receive the preprocessed hourly series from the data workspace."""
+
         self._prepared_datetime_index = None
         self._clear_export_state()
         if isinstance(series, pd.Series):
@@ -150,7 +156,8 @@ class ForecastPage(QWidget):
         self._model_combo.addItem("TimeXer", MODEL_TIMEXER)
 
     def _resolve_internal_resource_id(self) -> Optional[str]:
-        """将“户型 + 界面模型”映射为注册表中的资源 id。"""
+        """Map household + ui model selection to the registry model id."""
+
         household = self._household_combo.currentData()
         model = self._model_combo.currentData()
         if not isinstance(household, str) or not isinstance(model, str):
@@ -193,11 +200,7 @@ class ForecastPage(QWidget):
                 "建议提前规划高负载用电。"
             )
 
-        if horizon == "7d":
-            peak_day = peak_index // 24 + 1
-            return f"用电高峰提醒：预计高峰出现在 {peak_day} 天后，建议提前规划用电。"
-
-        if horizon == "30d":
+        if horizon in {"7d", "30d"}:
             peak_day = peak_index // 24 + 1
             return f"用电高峰提醒：预计高峰出现在 {peak_day} 天后，建议提前规划用电。"
 
@@ -396,11 +399,148 @@ class ForecastPage(QWidget):
         sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")
         return sanitized or fallback
 
-    def _clear_chart(self) -> None:
-        self._ax.clear()
+    def _apply_axes_style(self) -> None:
         self._ax.set_xlabel("采样点")
         self._ax.set_ylabel("用电量（kWh）")
         self._ax.grid(True, alpha=0.3)
+
+    def _create_hover_annotation(self) -> None:
+        self._hover_annotation = self._ax.annotate(
+            "",
+            xy=(0, 0),
+            xytext=(14, 14),
+            textcoords="offset points",
+            ha="left",
+            va="bottom",
+            fontsize=9,
+            color="#e6f3ff",
+            bbox={
+                "boxstyle": "round,pad=0.35",
+                "fc": "#102739",
+                "ec": "#29536b",
+                "alpha": 0.96,
+            },
+            zorder=6,
+        )
+        self._hover_annotation.set_visible(False)
+
+    def _hide_hover_annotation(self) -> None:
+        if self._hover_annotation is not None and self._hover_annotation.get_visible():
+            self._hover_annotation.set_visible(False)
+            self._chart_canvas.draw_idle()
+
+    def _format_axis_label(self, value: object) -> str:
+        if isinstance(value, pd.Timestamp):
+            return value.strftime("%Y-%m-%d %H:%M")
+        return str(value)
+
+    def _build_history_hover_labels(self, history_size: int, plotted_size: int) -> list[str]:
+        if (
+            self._prepared_datetime_index is not None
+            and len(self._prepared_datetime_index) >= plotted_size
+        ):
+            return [
+                self._format_axis_label(value)
+                for value in self._prepared_datetime_index[-plotted_size:]
+            ]
+
+        start = history_size - plotted_size + 1
+        return [f"采样点 {index}" for index in range(start, history_size + 1)]
+
+    def _build_prediction_hover_labels(self, prediction_size: int) -> list[str]:
+        if self._latest_export_index is not None and len(self._latest_export_index) >= prediction_size:
+            return [self._format_axis_label(value) for value in self._latest_export_index]
+        return [f"预测点 {index}" for index in range(1, prediction_size + 1)]
+
+    def _set_hover_targets(
+        self,
+        history_values: np.ndarray,
+        prediction_values: np.ndarray,
+        history_x: np.ndarray,
+        prediction_x: np.ndarray,
+    ) -> None:
+        self._hover_targets = []
+        if history_values.size > 0:
+            self._hover_targets.append(
+                {
+                    "series_name": "历史值",
+                    "x": history_x,
+                    "y": history_values,
+                    "labels": self._build_history_hover_labels(
+                        int(history_values.size), int(history_values.size)
+                    ),
+                }
+            )
+        if prediction_values.size > 0:
+            self._hover_targets.append(
+                {
+                    "series_name": "预测值",
+                    "x": prediction_x,
+                    "y": prediction_values,
+                    "labels": self._build_prediction_hover_labels(int(prediction_values.size)),
+                }
+            )
+
+    def _find_nearest_hover_point(self, event_x: float, event_y: float) -> Optional[dict[str, Any]]:
+        best_hit: Optional[dict[str, Any]] = None
+        best_distance = _HOVER_DISTANCE_PX * _HOVER_DISTANCE_PX
+
+        for target in self._hover_targets:
+            x = np.asarray(target["x"], dtype=np.float64)
+            y = np.asarray(target["y"], dtype=np.float64)
+            if x.size == 0:
+                continue
+            display_points = self._ax.transData.transform(np.column_stack((x, y)))
+            deltas = display_points - np.array([[event_x, event_y]], dtype=np.float64)
+            distances = np.sum(deltas * deltas, axis=1)
+            nearest_index = int(np.argmin(distances))
+            nearest_distance = float(distances[nearest_index])
+            if nearest_distance > best_distance:
+                continue
+            best_distance = nearest_distance
+            best_hit = {
+                "series_name": target["series_name"],
+                "index_label": target["labels"][nearest_index],
+                "value": float(y[nearest_index]),
+                "x": float(x[nearest_index]),
+                "y": float(y[nearest_index]),
+            }
+
+        return best_hit
+
+    def _build_hover_text(self, series_name: str, index_label: str, value: float) -> str:
+        return f"{series_name}\n时间：{index_label}\n数值：{value:.4f} kWh"
+
+    def _on_chart_hover(self, event: MouseEvent) -> None:
+        if event.inaxes is not self._ax or event.x is None or event.y is None:
+            self._hide_hover_annotation()
+            return
+
+        hit = self._find_nearest_hover_point(float(event.x), float(event.y))
+        if hit is None:
+            self._hide_hover_annotation()
+            return
+
+        assert self._hover_annotation is not None
+        self._hover_annotation.xy = (hit["x"], hit["y"])
+        self._hover_annotation.set_text(
+            self._build_hover_text(
+                hit["series_name"],
+                hit["index_label"],
+                hit["value"],
+            )
+        )
+        self._hover_annotation.set_visible(True)
+        self._chart_canvas.draw_idle()
+
+    def _on_chart_leave(self, _event: object) -> None:
+        self._hide_hover_annotation()
+
+    def _clear_chart(self) -> None:
+        self._ax.clear()
+        self._hover_targets = []
+        self._apply_axes_style()
+        self._create_hover_annotation()
         self._chart_canvas.draw_idle()
 
     def _plot_history_and_prediction(
@@ -414,14 +554,15 @@ class ForecastPage(QWidget):
 
         x_hist = np.arange(n_plot, dtype=np.float64)
         x_pred = np.arange(n_plot, n_plot + int(pred.size), dtype=np.float64)
-        self._ax.plot(x_hist, hist_plot, label="真实值", color="C0", linewidth=1.2)
+        self._ax.plot(x_hist, hist_plot, label="历史值", color="C0", linewidth=1.2)
         self._ax.plot(x_pred, pred, label="预测值", color="C1", linewidth=1.2)
         if n_plot > 0 and pred.size > 0:
             self._ax.axvline(x=n_plot - 0.5, color="0.5", linestyle=":", linewidth=0.8)
-        self._ax.set_xlabel("采样点")
-        self._ax.set_ylabel("用电量（kWh）")
-        self._ax.grid(True, alpha=0.3)
+
+        self._apply_axes_style()
         self._ax.legend(loc="upper right", fontsize=8)
+        self._create_hover_annotation()
+        self._set_hover_targets(hist_plot, pred, x_hist, x_pred)
         self._figure.tight_layout()
         self._chart_canvas.draw_idle()
 
@@ -431,6 +572,7 @@ class ForecastPage(QWidget):
         self._latest_record_id = None
         self._latest_record_signature = None
         self._latest_record_context = None
+        self._hover_targets = []
         if hasattr(self, "_export_btn"):
             self._export_btn.setEnabled(False)
 
